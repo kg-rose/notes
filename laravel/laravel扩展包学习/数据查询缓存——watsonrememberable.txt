@@ -1,0 +1,138 @@
+https://github.com/dwightwatson/rememberable
+数据是每个系统中都十分必要的，适当的增加缓存可以缓解数据库查询的压力，watson/rememberable 就是这样一个可以方便 Eloquent 模型缓存的扩展包。
+查询时使用 $links->getAllCached() 获取数据，getAllCached 方法实现如下：
+
+app/Models/Link.php
+
+.
+.
+.
+    public function getAllCached()
+    {
+        // 尝试从缓存中取出 cache_key 对应的数据。如果能取到，便直接返回数据。
+        // 否则运行匿名函数中的代码来取出活跃用户数据，返回的同时做了缓存。
+        return Cache::remember($this->cache_key, $this->cache_expire_in_minutes, function(){
+            return $this->all();
+        });
+    }
+.
+.
+.
+通常情况下我们都会使用 Cache::remember 方法来缓存数据，下面来看看 watson/rememberable 会不会让我们更加方便。
+
+
+
+
+
+安装
+$ composer require watson/rememberable
+
+
+使用
+首先需要让模型使用 Watson\Rememberable\Rememberable 这个 Trait，app/Models/Model.php 是一个抽象的基础模型，我们可以将 Trait 加到这个模型中，其他模型只需要继承 Model 即可使用缓存相关的功能了。
+
+app/Models/Model.php
+
+<?php
+
+namespace App\Models;
+
+use Watson\Rememberable\Rememberable;
+use Illuminate\Database\Eloquent\Model as EloquentModel;
+
+class Model extends EloquentModel
+{
+    use Rememberable;
+.
+.
+.
+因为 User 模型继承了 Illuminate\Foundation\Auth\User，所以这里单独添加：
+
+<?php
+
+namespace App\Models;
+
+use Watson\Rememberable\Rememberable;
+.
+.
+.
+class User extends Authenticatable implements JWTSubject
+{
+    use Rememberable;
+.
+.
+.
+这样 LaraBBS 中的模型只要继承了 app/Models/Model.php 就都可以使用 watson/rememberable 中的方法了。
+
+我们可以在查询的时候直接使用 remember 方法来代替 Cache::remember 方法。
+
+app/Models/Link.php
+
+namespace App\Models;
+
+// use Illuminate\Database\Eloquent\Model; 删除这行，让 Link 继承当前目录下的 Model
+
+class Link extends Model
+{
+    public function getAllCached()
+    {
+        return $this->remember($this->cache_expire_in_minutes)->get();
+    }
+Cache::remember 的第一个参数是一个 key，方便获取缓存以及删除缓存，而 watson/rememberable 提供的 remember 方法会将查询语句的哈希值作为默认的 key，所以不用传入 key 也是能正常工作的。
+
+不过在一些特定条件下我们还是需要将缓存清除，现在的做法是在模型保存的时候触发 saved 事件时将相关缓存清除，代码如下：
+
+app/Observers/LinkObserver.php
+
+.
+.
+.
+class LinkObserver
+{
+    // 在保存后清空 cache_key 对应的缓存
+    public function saved(Link $link)
+    {
+        Cache::forget($link->cache_key);
+    }
+}
+所以我们还是需要指定一个 key 方便删除缓存，watson/rememberable 为模型提供了 $rememberCacheTag 属性，该属性会为该模型所有的缓存添加标签（tag）。不过并不是所有的缓存驱动都支持标签功能，需要先将 .env 中的 CACHE_DRIVER
+设置为 redis。
+
+.env*
+···
+.
+.
+.
+CACHE_DRIVER=redis
+.
+.
+.
+···
+将原有的属性 $cache_key 修改为 $rememberCacheTag 即可。
+
+app/Models/Link.php
+
+    //public $cache_key = 'larabbs_links';
+    protected $rememberCacheTag = 'larabbs_links';
+
+    protected $cache_expire_in_minutes = 1440;
+
+    public function getAllCached()
+    {
+        return $this->remember($this->cache_expire_in_minutes)->get();
+    }
+直接使用 flushCache() 方法即可清除 $rememberCacheTag 相关的所有缓存，修改 LinkObserver：
+
+app/Observers/LinkObserver.php
+
+.
+.
+.
+class LinkObserver
+{
+    // 在保存后清空对应的缓存
+    public function saved(Link $link)
+    {
+        $link->flushCache();
+    }
+}
