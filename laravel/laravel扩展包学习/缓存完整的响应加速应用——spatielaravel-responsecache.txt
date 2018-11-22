@@ -1,0 +1,107 @@
+https://github.com/spatie/laravel-responsecache
+
+响应速度对于任何一个项目都是十分重要的，缓存是很重要的一种手段，当访问量大是，合理的增加缓存，能有效的缓解服务器的压力。
+
+安装
+
+composer require spatie/laravel-responsecache
+
+发布配置文件
+
+php artisan vendor:publish --provider="Spatie\ResponseCache\ResponseCacheServiceProvider"
+
+先来简单的了解一下配置：
+
+enabled —— 是否开启缓存；
+cache_profile —— 定义什么样的请求需要被缓存，可自定义；
+cache_lifetime_in_minutes —— 默认的缓存时间，单位分钟，默认为 7 天；
+add_cache_time_header —— 是否在响应中添加 Laravel-responsecache 头，用于说明缓存过期时间，默认会在 debug 模式添加；
+cache_store —— 定义缓存存放的驱动，默认是 file，推荐 redis。
+cache_tag —— 当使用了 redis 这样的缓存驱动是，可以增加缓存标签，使用 responsecache:clear 命令只会清除对应标签的缓存。
+
+
+修改配置中的驱动默认为 redis，并配置 cache_tag 为 larabbs-response：
+
+config/responsecache.php
+
+'cache_store' => env('RESPONSE_CACHE_DRIVER', 'redis'),
+'cache_tag' => 'larabbs-response',
+
+扩展包缓存的逻辑都会通过 \Spatie\ResponseCache\Middlewares\CacheResponse 这个中间件来完成的
+
+不缓存 ajax 请求；
+不缓存 testing 环境（APP_ENV=testing）或者 console 模式下的请求；
+只缓存 GET 请求；
+只缓存成功的响应或者状态码在 300 至 400 之间跳转的响应。
+一次请求以及对应的响应满足了上面的条件，便会被缓存，这样下次请求同样的请求，中间件就直接返回响应了。这些逻辑是通过配置中 cache_profile 配置的类来完成的，如果默认的逻辑不满足你的需求，可以自己完成一个类，替换 cache_profile 配置，这个类只需要实现 Spatie\ResponseCache\CacheProfiles\CacheProfile 接口中的方法即可。
+
+
+使用
+全局使用
+
+第一种使用方式就是全局使用，将中间件定义在 web 这个中间件组中，同时扩展包还提供了一个 doNotCacheResponse 中间件，用于说明哪些路由不需要缓存。
+
+修改 app/Http/Kernel.php：
+
+app/Http/Kernel.php
+
+.
+.
+.
+protected $middlewareGroups = [
+   'web' => [
+        .
+        .
+        .
+       // 缓存响应
+       \Spatie\ResponseCache\Middlewares\CacheResponse::class,
+   ],
+.
+.
+.
+protected $routeMiddleware = [
+    .
+    .
+    .
+    // 不缓存的响应
+   'doNotCacheResponse' => \Spatie\ResponseCache\Middlewares\DoNotCacheResponse::class,
+];
+
+在不使用 doNotCacheResponse 的情况下默认会缓存所有的 GET 请求，访问一次 Larabbs 首页 http://larabbs.test 
+
+
+所以应该将缓存加在变化不大的页面中，也就是使用 doNotCacheResponse 中间件说明哪些网页不需要缓存，例如：
+
+routes/web.php
+
+Route::get('/', 'TopicsController@index')->name('root')->middleware('doNotCacheResponse');
+
+
+指定路由使用
+取出全局缓存 \Spatie\ResponseCache\Middlewares\CacheResponse::class,，添加如下代码：
+
+app/Http/Kernel.php
+
+protected $routeMiddleware = [
+        
+   
+        // 需要缓存的响应
+        'cacheResponse' => \Spatie\ResponseCache\Middlewares\CacheResponse::class,
+];
+这样只用对需要缓存的路由使用 cacheResponse 中间件即可，例如：
+
+routes/web.php
+
+Route::get('topics/{topic}/pdf', 'TopicsController@pdf')->name('topics.show.pdf')->middleware('cacheResponse:60');
+
+这是一个显示话题详情 pdf 的页面，是之前课程的一个演示页面，如果这个页面不经常变动且耗时，那么可以适当的增加缓存，可以指定第二个参数为缓存多长时间，单位是分钟，这里我们缓存 60 分钟。
+
+
+总结
+扩展包提供了缓存整个响应的功能，我们需要根据具体的业务场景分辨出什么样的页面可以做这样的缓存：
+
+内容经常变动的页面不要这样缓存；
+csrf token 也会被缓存，导致再次提交表单时验证失败，所以有表单的页面不要设置这样的缓存；
+必要的时候可以通过 ResponseCache::clear() 清除全部的缓存；
+可以通过 ResponseCache::forget()，清除某个单独页面的缓存，但是只能针对未登录页面或者具体用户进行清除；
+可以通过自定义 cache_profile 类来改变缓存的逻辑来满足特殊的业务场景。
