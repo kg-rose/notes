@@ -1,0 +1,246 @@
+https://github.com/Maatwebsite/Laravel-Excel
+
+Laravel Excel 在 2018 年3 月15日发布 3.0 版本，这是一个大版本，从版本号中我们可以看出来，这与我们比较熟悉的 2.1 并不兼容。3.0 版本为我们带来了更加灵活的使用方法，使用起来会更加的方便，不过才发布没多久，还未支持导入 Excel 的功能
+
+首先需要升级到 3.0 版本，可以通过 composer require 来升级某个扩展包：
+
+composer require maatwebsite/excel:^3.0 --update-with-dependencies
+这里增加了一个参数 --update-with-dependencies 在升级的同时升级扩展包的依赖。
+
+
+删除了不再需要的 phpoffice/phpexcel 和 jeremeamia/superclosure 两个依赖，同时安装了 phpoffice/phpspreadsheet。最后有报错，是因为我们的配置文件还是 2.1 版本的，需要删除 config/exce.php，重新发布配置文件。
+
+$ php artisan vendor:publish --provider="Maatwebsite\Excel\ExcelServiceProvider"
+
+新增一个话题导出类 TopicsExport.php
+
+php artisan make:export TopicsExport --model=Topic
+
+app/Exports/TopicsExport.php
+
+
+<?php
+
+namespace App\Exports;
+
+use App\Models\Topic;
+use Maatwebsite\Excel\Concerns\Exportable;
+use Illuminate\Contracts\Support\Responsable;
+use Maatwebsite\Excel\Concerns\FromQuery;
+use Maatwebsite\Excel\Concerns\WithMapping;
+use Maatwebsite\Excel\Concerns\WithHeadings;
+use Maatwebsite\Excel\Concerns\WithTitle;
+use Maatwebsite\Excel\Concerns\ShouldAutoSize;
+
+class TopicsExport implements Responsable, FromQuery, WithMapping, WithHeadings, WithTitle, ShouldAutoSize,
+{
+    use Exportable;
+
+    private $fileName = 'tpoics.xlsx';
+
+    protected $days;
+
+    public function withinDays(int $days)
+    {
+        $this->days = $days;
+        $this->fileName = 'topics-withinDays-'.$this->days.'.xlsx';
+        return $this;
+    }
+
+    public function query()
+    {
+        return Topic::whereDate('created_at', '>=', now()->subDays($this->days))
+            ->with('category');
+    }
+
+    public function map($topic): array
+    {
+        return [
+            $topic->id,
+            $topic->title,
+            route('topics.show', $topic),
+            $topic->user_id,
+            $topic->category->name,
+            $topic->category_id,
+            $topic->view_count,
+            $topic->created_at,
+        ];
+    }
+
+    public function headings(): array
+    {
+        return [
+            'id',
+            '标题',
+            '链接',
+            '用户id',
+            '分类名称',
+            '分类id',
+            '阅读次数',
+            '创建时间'
+        ];
+    }
+
+    public function title(): string
+    {
+        return 'topics';
+    }
+}
+
+
+这个类乍一看可能不是很理解，我们慢慢解释，首先 Laravel Excel 3.0 的导出的各种功能如 定义表头，定义数据，自动计算宽度，是否有多个数据表 等等都是通过 实现接口 的方式解决的。换句话说，如果 TopicsExport 类 implements 了某个接口，并且实现了接口需要的方法，就能添加某个功能。回忆一下 Laravel 队列中的 Illuminate\Contracts\Queue\ShouldQueue 接口，实现方法类似。
+
+TopicsExport 实现了：
+
+Maatwebsite\Excel\Concerns\FromQuery
+
+需要实现 query 方法，返回一个 Illuminate\Database\Query\Builder，也就是只返回查询条件，不返回查询结果，这样做的好处是，当数据量特别大的时候，我们不应该一次性把所有数据查出来放入内容，应该使用 chunk 方法，分块查询。Laravel Excel 会自动的分块查询，所以我们返回查询条件即可。这里的查询条件中我们使用了属性 $this->days，因为这个属性是动态传入的。
+
+Maatwebsite\Excel\Concerns\WithHeadings
+
+定义表头，实现 headings 方法，返回一个表头数组。
+
+Maatwebsite\Excel\Concerns\WithMapping
+
+格式化数据，实现 map 方法，返回一个数组，定义每行的数据。
+
+Maatwebsite\Excel\Concerns\ShouldAutoSize;
+
+是否自动计算单元格宽度，无需实现方法。不难想象，扩展包应该是通过 instanceof ShouldAutoSize 来判断是否实现了该接口，决定是否执行某些逻辑。
+
+Maatwebsite\Excel\Concerns\WithTitle;
+
+自定义表名，实现 title 方法，定义当前数据表叫 topics。
+
+withinDays 方法；
+
+该方法是用来接收传入的 days 参数，也就是需要几天之内的数据。
+
+
+修改 TopicsController 使用 TopicsExport 导出 Excel。
+
+app/Http/Controllers/TopicsController.php
+
+
+use App\Exports\TopicsExport;
+
+ public function export(Request $request, TopicsExport $topicsExport)
+    {
+        return $topicsExport->withinDays($request->days);
+    }
+
+
+
+同时导出用户数据
+我们的需求是导出话题数据同时导出对应的用户数据，用户数据的导出同样需要一个 Export 类，先来完成这个类：
+
+写入如下内容：
+
+app/Exports/UsersExport.php
+
+<?php
+
+namespace App\Exports;
+
+use App\Models\User;
+use Maatwebsite\Excel\Concerns\Exportable;
+use Maatwebsite\Excel\Concerns\FromQuery;
+use Maatwebsite\Excel\Concerns\WithHeadings;
+use Maatwebsite\Excel\Concerns\WithMapping;
+use Maatwebsite\Excel\Concerns\WithTitle;
+use Maatwebsite\Excel\Concerns\ShouldAutoSize;
+use Maatwebsite\Excel\Events\BeforeExport;
+use Maatwebsite\Excel\Events\AfterSheet;
+
+class UsersExport implements FromQuery, WithHeadings, WithMapping, WithTitle, ShouldAutoSize
+{
+    use Exportable;
+
+    private $fileName = 'users.xlsx';
+
+    protected $days;
+
+    public function withinDays(int $days)
+    {
+        $this->days = $days;
+        $this->fileName = 'users-published-topics-within-'.$this->days.'.xlsx';
+        return $this;
+    }
+
+    public function query()
+    {
+        return User::query()->whereHas('topics', function($query) {
+            $query->whereDate('created_at', '>=', now()->subDays($this->days));
+        });
+    }
+
+    public function map($user): array
+    {
+        return [
+            $user->id,
+            $user->name,
+            $user->phone,
+            $user->email,
+            ($user->weixin_unionid || $user->weixin_openid) ? '是' : '否',
+            $user->created_at,
+        ];
+    }
+
+    public function headings(): array
+    {
+        return [
+            'id',
+            '姓名',
+            '手机',
+            '邮箱',
+            '是否绑定微信',
+            '注册时间'
+        ];
+    }
+
+    public function title(): string
+    {
+        return 'users';
+    }
+}
+
+Laravel Excel 提供了 Maatwebsite\Excel\Concerns\WithMultipleSheets 接口，继承这个接口，实现 sheets 方法，返回一个数组，返回多个 export 实例即可。
+
+app/Exports/TopicsExport.php
+
+use Maatwebsite\Excel\Concerns\WithMultipleSheets;
+
+
+class TopicsExport implements Responsable, FromQuery, WithMapping, WithHeadings, WithTitle, ShouldAutoSize, WithMultipleSheets
+
+
+
+    public function sheets(): array
+    {
+        return [
+            (new self())->withinDays($this->days),
+            (new UsersExport())->withinDays($this->days),
+        ];
+    }
+
+自定义表格宽度
+
+
+use Maatwebsite\Excel\Concerns\WithEvents;
+
+class UsersExport implements FromQuery, WithHeadings, WithMapping, WithTitle, ShouldAutoSize, WithEvents
+{
+
+
+    public function registerEvents(): array
+    {
+        return [
+            AfterSheet::class => function(AfterSheet $event) {
+                $event->sheet->getColumnDimension('C')->setAutoSize(false)->setWidth(10);
+                $event->sheet->getColumnDimension('E')->setAutoSize(false)->setWidth(15);
+            }
+        ];
+    }
+解释一下上面的代码，我们实现了 Maatwebsite\Excel\Concerns\WithEvents 接口，同时实现了对应的 registerEvents 方法。方法中我们注册了 AfterSheet 事件，表单处理
+
+$event->sheet 会得到一个表单对象，有兴趣的同学可以看看源码，这个对象还可以使用 PhpOffice\PhpSpreadsheet\Worksheet\Worksheet 对象中的方法，我们查看 phpspreadsheet 的相关文档会得到更多有用的信息，比如设置列宽度，通过 getColumnDimension 便可获取某一列，进行相关设置，通过 setAutoSize(false) 关闭这一列的自动计算宽度，再通过 setWidth 设置具体宽度。

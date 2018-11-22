@@ -1,0 +1,147 @@
+composer update maatwebsite/excel
+
+打开扩展包的文档 https://laravel-excel.maatwebsite.nl/3.1/getting-started/ 左侧就有关于导入的详细说明。
+
+导入也需要一个类来完成逻辑，使用 make:import 命令。
+
+php artisan make:import TopicsImport --model="Models\Topic"
+
+该命令创建了一个目录 app\Imports 用来存放所有的导入类，创建了 TopicsImport.php 文件用来完成导入相关的逻辑。
+
+app/Http/Controllers/TopicsController.php
+
+ public function import(Request $request, TopicsImport $topicsImport)
+    {
+        Excel::import($topicsImport, $request->file('excel'));
+         return back()->with('success', '导入成功');
+    }
+
+处理 Header
+由于我们的 Excel 是有 Header 的，需要告诉 TopicsImport，它会帮我们自动处理，并且会将 header 中的字段最为，每一行数据的 key。
+
+app/Imports/TopicsImport.php
+
+use Maatwebsite\Excel\Concerns\ToModel;
+use Maatwebsite\Excel\Concerns\WithHeadingRow;
+
+class TopicsImport implements ToModel, WithHeadingRow
+{
+
+
+
+实现 WithHeadingRow 接口，TopicsImport 变回自动处理我们的头部数据，注意 3.0 版本之后，各种配置都是通过实现接口的方式来处理的。
+
+但是这里有个问题，如果你的 Header 中包含中文，需要特别注意，因为每个 Header 字段都会经过 str_slug 字段的处理，对于中文都会返回空，所以需要改变一下配置。
+
+
+config/excel.php
+
+ 'imports' => [
+        'heading_row' => [
+            'formatter' => 'none',
+        ],
+    ],
+
+
+将 formatter 改成 none。
+
+最终处理完成的每一行数据，类似如下这样：
+
+array [
+  "id" => 101.0
+  "标题" => "如何正确阅读本书？"
+  "链接" => "http://larabbs.test/topics/101"
+  "用户id" => 1.0
+  "分类名称" => "教程"
+  "分类id" => 2.0
+  "阅读次数" => null
+  "创建时间" => "2018-10-15 14:26:20"
+];
+
+
+导入模型
+只需要实现 model 方法即可，返回一个 Topic 对象。
+
+app/Imports/TopicsImport.php
+
+
+ public function model(array $row)
+    {
+        $topic = new Topic([
+            'title' => $row['标题'],
+            'category_id' => (int)$row['分类id'],
+        ]);
+        $topic->user_id = (int)$row['用户id'];
+
+        return $topic;
+    }
+
+
+处理多张表
+如果你的 Excel 只有一张表单，那么上面的代码已经可以正常工作了，但是我们的 Excel 有两张表，需要继续修改一下代码，
+
+app/Imports/TopicsImport.php
+
+
+use Maatwebsite\Excel\Concerns\WithMultipleSheets;
+
+class TopicsImport implements ToModel, WithHeadingRow, WithMultipleSheets
+
+
+    public function sheets(): array
+    {
+        return [
+            'topics' => new self(),
+        ];
+    }
+需要实现 WithMultipleSheets 接口，并实现 sheets 方法，返回一个数组，这个数组告诉 TopicsImport 该怎么处理各个数据表，可以使用数字序号，也可以使用表的名字，我们的表名为 topics。
+
+
+优化内存使用
+如果一个 Excel 中的数据过多，一次性读入内存是非常危险的。扩展包已经考虑到了这一点，提供了分块读取的功能。另外如果每一条数据就写入一次数据库，写入带过频繁也会带来性能问题，扩展包也提供了方法，可以处理完一批数据后，统一插入一次。
+
+
+
+app/Imports/TopicsImport.php
+
+
+use Maatwebsite\Excel\Concerns\WithChunkReading;
+use Maatwebsite\Excel\Concerns\WithBatchInserts;
+
+class TopicsImport implements ToModel, WithHeadingRow, WithMultipleSheets, WithChunkReading, WithBatchInserts
+{
+
+
+    public function batchSize(): int
+    {
+        return 1000;
+    }
+
+    public function chunkSize(): int
+    {
+        return 1000;
+    }
+
+
+优化代码
+Importable 是一个 Trait，使用之后可以让 Controller 中的代码更加简洁。
+
+app/Imports/TopicsImport.php
+
+use Maatwebsite\Excel\Concerns\Importable;
+
+class TopicsImport implements ToModel, WithHeadingRow, WithMultipleSheets, WithChunkReading, WithBatchInserts
+{
+    use Importable;
+
+app/Http/Controllers/TopicsController.php
+
+
+ public function import(Request $request, TopicsImport $topicsImport)
+    {
+        $topicsImport->import($request->file('excel'));
+        return back()->with('success', '导入成功');
+    }
+
+
+
